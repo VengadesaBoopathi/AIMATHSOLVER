@@ -47,7 +47,7 @@ function App() {
     const formData = new FormData();
     formData.append('image', file);
 
-    // Build initial guess string
+    // Build initial guess string using template literals.
     const initialGuessString = Object.entries(initialValues)
       .map(([varName, val]) => `${varName}=${val}`)
       .join(', ');
@@ -149,32 +149,20 @@ function App() {
 
           <Card className="shadow-sm mb-3">
             <Card.Body>
-              <Card.Title>Symbolic Approach</Card.Title>
-              <pre>{results.symbolic.solution}</pre>
-              <p><strong>Time Taken:</strong> {results.symbolic.time_ms}</p>
-              {results.symbolic.error && <p className="text-danger">Error: {results.symbolic.error}</p>}
+              <Card.Title>Recommended Method</Card.Title>
+              <p><strong>{results.recommended_method.toUpperCase()}</strong></p>
+              <Card.Title>Result</Card.Title>
+              <pre>{results.result.solution}</pre>
+              <p>
+                <strong>Time Taken:</strong> {results.result.time_ms}
+              </p>
+              {results.result.error && (
+                <p className="text-danger">Error: {results.result.error}</p>
+              )}
             </Card.Body>
           </Card>
 
-          <Card className="shadow-sm mb-3">
-            <Card.Body>
-              <Card.Title>Hybrid Approach</Card.Title>
-              <pre>{results.hybrid.solution}</pre>
-              <p><strong>Time Taken:</strong> {results.hybrid.time_ms}</p>
-              {results.hybrid.error && <p className="text-danger">Error: {results.hybrid.error}</p>}
-            </Card.Body>
-          </Card>
-
-          <Card className="shadow-sm mb-3">
-            <Card.Body>
-              <Card.Title>Numerical Approach (SciPy)</Card.Title>
-              <pre>{results.numeric.solution}</pre>
-              <p><strong>Time Taken:</strong> {results.numeric.time_ms}</p>
-              {results.numeric.error && <p className="text-danger">Error: {results.numeric.error}</p>}
-            </Card.Body>
-          </Card>
-
-          {results.mcqs.length > 0 && (
+          {results.mcqs && results.mcqs.length > 0 && (
             <Card className="shadow-sm mb-3">
               <Card.Body>
                 <Card.Title>MCQ Challenge</Card.Title>

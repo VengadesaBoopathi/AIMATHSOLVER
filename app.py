@@ -1,28 +1,32 @@
+# .\venv\Scripts\Activate
 from flask import Flask, request, jsonify
 from PIL import Image
 import pytesseract
 import time
 from sympy import (
     Eq, solve, sympify, solveset, S, latex,
-    parse_expr, FiniteSet
+    parse_expr, FiniteSet, nsolve, Symbol
 )
 from sympy.parsing.sympy_parser import standard_transformations, implicit_multiplication
 import re
 import random
 import os
-from io import BytesIO
-from flask_cors import CORS
-from sympy import nsolve, Symbol
-from sympy.core.relational import Relational
+import sys
 import numpy as np
 from scipy.optimize import fsolve
 import sympy as sp  
+import joblib
+import pandas as pd 
+from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app)
 
-import joblib 
-model = joblib.load('solver_model.pkl')
+
+if os.path.exists('solver_model.pkl'):
+    model = joblib.load('solver_model.pkl')
+else:
+    model = None   
 
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
@@ -62,52 +66,6 @@ def parse_equation(equation_list):
         else:
             parsed.append(parse_expr(eq, transformations=transformations))
     return parsed
-
-def is_complex_equation(equations, symbol_threshold=5, ops_threshold=50, degree_threshold=2):
-    total_symbols = sum(len(eq.free_symbols) for eq in equations)
-    total_ops = sum(len(eq.atoms(Relational)) + len(eq.atoms()) for eq in equations)
-
-    max_degree = 0
-    for eq in equations:
-        if isinstance(eq, Relational):
-            poly = eq.lhs - eq.rhs
-        else:
-            poly = eq
-        try:
-            deg = poly.as_poly().total_degree()
-        except Exception:
-            deg = 0  # Non-polynomial, fallback
-        max_degree = max(max_degree, deg)
-
-    return (
-        total_symbols > symbol_threshold or
-        total_ops > ops_threshold or
-        max_degree > degree_threshold
-    )
-
-def solve_equation_system_hybrid(equations, user_guesses=None):
-    start_time = time.perf_counter()
-    try:
-        all_vars = list(set().union(*[eq.free_symbols for eq in equations]))
-        guesses = [user_guesses.get(str(var), 1.0) for var in all_vars]
-
-        if is_complex_equation(equations):
-            numeric_sol = nsolve(equations, all_vars, guesses)
-            result = [{str(var): numeric_sol[i].evalf() for i, var in enumerate(all_vars)}]
-        else:
-            result = solve(equations, dict=True)
-            if not result: 
-                numeric_sol = nsolve(equations, all_vars, guesses)
-                result = [{str(var): numeric_sol[i].evalf() for i, var in enumerate(all_vars)}]
-    except Exception:
-        all_vars = list(set().union(*[eq.free_symbols for eq in equations]))
-        guesses = [user_guesses.get(str(var), 1.0) for var in all_vars]
-        numeric_sol = nsolve(equations, all_vars, guesses)
-        result = [{str(var): numeric_sol[i].evalf() for i, var in enumerate(all_vars)}]
-
-    elapsed_time = (time.perf_counter() - start_time) * 1000
-    return result, elapsed_time
-
 
 def solve_equation_system_numeric(equations, user_guesses=None):
     """Solve system using SciPy's fsolve."""
@@ -170,18 +128,15 @@ def generate_mcqs(solution):
             return [f"{opt:.2f}" for opt in options], idx
         else:
             correct = {str(k): float(v) for k, v in first_sol.items()}
-            distractors = [{
-                var: round(val + random.choice([-2, -1.5, 1, 2]) + random.uniform(-0.5, 0.5), 2)
-                for var, val in correct.items()
-            } for _ in range(3)]
+            distractors = [dict((var, round(val + random.choice([-2, -1.5, 1, 2]) + random.uniform(-0.5, 0.5), 2))
+                           for var, val in correct.items())
+                           for _ in range(3)]
             options = [correct] + distractors
             random.shuffle(options)
             formatted = [", ".join(f"{k} = {v:.2f}" for k, v in o.items()) for o in options]
             idx = formatted.index(", ".join(f"{k} = {v:.2f}" for k, v in correct.items()))
             return formatted, idx
     return [], -1
-
-
 
 def extract_features(parsed_equations):
     """Extract features for ML prediction"""
@@ -193,20 +148,16 @@ def extract_features(parsed_equations):
         if isinstance(eq, Eq):
             expr = eq.lhs - eq.rhs
         else:
-            expr = eq
-            
-        # Count terms
+            expr = eq            
         terms = expr.as_ordered_terms()
         total_terms += len(terms)
         
-        # Get degree
         try:
-            deg = degree(expr)
-        except:
+            deg = sp.degree(expr) if expr.is_polynomial() else 0
+        except Exception:
             deg = 0
         max_deg = max(max_deg, deg)
         
-        # Collect variables
         variables.update(expr.free_symbols)
         
     return {
@@ -215,7 +166,7 @@ def extract_features(parsed_equations):
         'Num_Variables': len(variables)
     }
 
-
+# ... [imports and previous code remain the same]
 
 @app.route('/upload', methods=['POST'])
 def upload_image():
@@ -223,7 +174,7 @@ def upload_image():
         return jsonify({'error': 'No image uploaded'}), 400
 
     file = request.files['image']
-    image = Image.open(BytesIO(file.read()))
+    image = Image.open(file.stream)
     
     initial_guesses_str = request.form.get('initial_guesses', '')
     user_guesses = {}
@@ -239,59 +190,103 @@ def upload_image():
         eq_texts = image_to_equation(image)
         parsed_eqs = parse_equation(eq_texts)
         parsed_latex = [latex(eq) for eq in parsed_eqs]
-        
-        # ----- Symbolic Solve -----
-        try:
-            start_sym = time.perf_counter()
-            symbolic_sol = solve(parsed_eqs, dict=True)
-            symbolic_time = (time.perf_counter() - start_sym) * 1000
-            symbolic_error = None
-        except Exception as e:
-            symbolic_sol = None
-            symbolic_time = 0
-            symbolic_error = str(e)
-            
-        symbolic_solution_str = format_solution(symbolic_sol) if symbolic_sol else symbolic_error
 
-        # ----- Hybrid Solve -----
-        try:
-            hybrid_sol, hybrid_time = solve_equation_system_hybrid(parsed_eqs, user_guesses)
-            hybrid_error = None
-        except Exception as e:
-            hybrid_sol = None
-            hybrid_time = 0
-            hybrid_error = str(e)
-        hybrid_solution_str = format_solution(hybrid_sol) if hybrid_sol else hybrid_error
+        features = extract_features(parsed_eqs)
+        if model is None:
+            recommended_method = 'symbolic'
+        else:
+            recommended_method = model.predict([[features['Degree'], features['Num_Terms'], 
+                                                  features['Num_Variables']]])[0]
 
-        # ----- Numerical Solve with SciPy -----
-        numeric_sol, numeric_time, numeric_error = solve_equation_system_numeric(parsed_eqs, user_guesses)
-        numeric_solution_str = format_dict_solution(numeric_sol) if numeric_sol else numeric_error
+        result = {}
+        mcqs = []
+        correct_idx = -1
 
-        # Generate MCQs based on hybrid solution (if available)
-        mcqs, correct_idx = generate_mcqs(hybrid_sol) if hybrid_sol else ([], -1)
+        if recommended_method == 'symbolic':
+            try:
+                start = time.perf_counter()
+                symbolic_sol = solve(parsed_eqs, dict=True)
+                elapsed_time = (time.perf_counter() - start) * 1000
+                mcqs, correct_idx = generate_mcqs(symbolic_sol)
+                result = {
+                    'method': 'symbolic',
+                    'solution': format_solution(symbolic_sol),
+                    'time_ms': f"{elapsed_time:.2f} ms",
+                    'error': None
+                }
+            except Exception as e:
+                # Fallback to numeric if symbolic fails.
+                fallback_error = e
+                recommended_method = 'numeric'  # Update the recommended approach.
+                try:
+                    start = time.perf_counter()
+                    numeric_sol, numeric_time, numeric_error = solve_equation_system_numeric(
+                        parsed_eqs, user_guesses
+                    )
+                    mcqs, correct_idx = generate_mcqs(numeric_sol if numeric_sol else {})
+                    result = {
+                        'method': 'numeric',
+                        'solution': format_dict_solution(numeric_sol),
+                        'time_ms': f"{numeric_time:.2f} ms",
+                        'error': f"Symbolic solver failed: {str(fallback_error)}. Numeric fallback executed."
+                                 f" {numeric_error or ''}".strip()
+                    }
+                except Exception as e2:
+                    result = {
+                        'method': 'numeric',
+                        'solution': None,
+                        'time_ms': None,
+                        'error': f"Both symbolic and numeric solvers failed. Symbolic error: {str(fallback_error)}; "
+                                 f"Numeric error: {str(e2)}"
+                    }
+
+        elif recommended_method == 'numeric':
+            try:
+                start = time.perf_counter()
+                numeric_sol, numeric_time, numeric_error = solve_equation_system_numeric(
+                    parsed_eqs, user_guesses
+                )
+                mcqs, correct_idx = generate_mcqs(numeric_sol if numeric_sol else {})
+                result = {
+                    'method': 'numeric',
+                    'solution': format_dict_solution(numeric_sol),
+                    'time_ms': f"{numeric_time:.2f} ms",
+                    'error': numeric_error
+                }
+            except Exception as e:
+                result = {
+                    'method': 'numeric',
+                    'solution': None,
+                    'time_ms': None,
+                    'error': f"Numeric solver failed: {str(e)}"
+                }
 
         return jsonify({
             'equations': parsed_latex,
-            'symbolic': {
-                'solution': symbolic_solution_str,
-                'time_ms': f"{symbolic_time:.2f} ms",
-                'error': symbolic_error
-            },
-            'hybrid': {
-                'solution': hybrid_solution_str,
-                'time_ms': f"{hybrid_time:.2f} ms",
-                'error': hybrid_error
-            },
-            'numeric': {
-                'solution': numeric_solution_str,
-                'time_ms': f"{numeric_time:.2f} ms",
-                'error': numeric_error
-            },
+            'recommended_method': recommended_method,
+            'result': result,
             'mcqs': [f"{chr(65+i)}: {opt}" for i, opt in enumerate(mcqs)],
             'correct': chr(65+correct_idx) if correct_idx >= 0 else ""
         })
+        
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+def train_ml_model(training_data_file='training_data.csv'):
+    
+    data = pd.read_csv(r"C:\Users\vengi\Desktop\AIMATHSOLVER\my-react-app\src\data.csv")
+
+    X = data[['Degree', 'Num_Terms', 'Num_Variables']]
+    y = data['Best_Method']
+    from sklearn.tree import DecisionTreeClassifier
+    clf = DecisionTreeClassifier()
+    clf.fit(X, y)    
+    joblib.dump(clf, 'solver_model.pkl')
+    print("Training complete. Model saved as solver_model.pkl.")
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    if len(sys.argv) > 1 and sys.argv[1].lower() == "train":
+        train_ml_model()
+    else:
+        app.run(debug=True)
