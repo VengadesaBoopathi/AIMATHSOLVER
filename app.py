@@ -18,6 +18,8 @@ import sympy as sp
 import joblib
 import pandas as pd 
 from flask_cors import CORS
+from pix2tex.cli import LatexOCR
+pix2tex_model = LatexOCR()
 
 app = Flask(__name__)
 CORS(app)
@@ -27,10 +29,7 @@ if os.path.exists('solver_model.pkl'):
     model = joblib.load('solver_model.pkl')
 else:
     model = None   
-
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-
-MATH_CONFIG = r'--oem 3 --psm 6 -c tessedit_char_whitelist=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-=(){}[]^/*%'
+# Update OCR_SUBSTITUTIONS
 OCR_SUBSTITUTIONS = {
     r'\bmod\b': '^',
     r'\{': '(',
@@ -39,8 +38,15 @@ OCR_SUBSTITUTIONS = {
     r'\]': ')',
     r'\s*([/])\s*': r'\1',
     r'\bO\b': '0',
-    r'\bI\b': '1'
+    r'\bI\b': '1',
+    r'\\ ': '',  
+    r'\\%': '%', 
+    r'\\_': '_',
+    r'\\times': '*',
+    r'°': '*pi/180',  # Convert degrees to radians
+    r'\^': '**'  # Handle exponents properly
 }
+
 
 def preprocess_ocr_text(text):
     text = re.sub(r'\s*([+/*^\-=])\s*', r'\1', text)
@@ -48,23 +54,36 @@ def preprocess_ocr_text(text):
         text = re.sub(p, r, text)
     return text.strip()
 
-def image_to_equation(image):
-    cleaned_text = preprocess_ocr_text(pytesseract.image_to_string(image, config=MATH_CONFIG))
+def image_to_equation(image):    
+    raw_latex = pix2tex_model(image)    
+    print(raw_latex)    
+    cleaned_text = preprocess_ocr_text(raw_latex)    
     for sep in ['\n', ';', 'and']:
         if sep in cleaned_text:
             return [eq.strip() for eq in cleaned_text.split(sep) if eq.strip()]
     return [cleaned_text]
 
+# Modified parse_equation function
 def parse_equation(equation_list):
     transformations = standard_transformations + (implicit_multiplication,)
     parsed = []
     for eq in equation_list:
-        if '=' in eq:
-            lhs, rhs = eq.split('=', 1)
-            parsed.append(Eq(parse_expr(lhs, transformations=transformations),
-                             parse_expr(rhs, transformations=transformations)))
-        else:
-            parsed.append(parse_expr(eq, transformations=transformations))
+        try:
+            # Convert LaTeX to SymPy-compatible format
+            eq = re.sub(r'\\frac{([^}]*)}{([^}]*)}', r'(\1)/(\2)', eq)
+            eq = re.sub(r'\\sin', 'sin', eq)
+            eq = re.sub(r'\\cos', 'cos', eq)
+            eq = re.sub(r'\\tan', 'tan', eq)
+            
+            if '=' in eq:
+                lhs, rhs = eq.split('=', 1)
+                parsed_eq = Eq(parse_expr(lhs, transformations=transformations),
+                              parse_expr(rhs, transformations=transformations))
+            else:
+                parsed_eq = parse_expr(eq, transformations=transformations)
+            parsed.append(parsed_eq)
+        except Exception as e:
+            raise ValueError(f"Error parsing equation '{eq}': {str(e)}")
     return parsed
 
 def solve_equation_system_numeric(equations, user_guesses=None):
@@ -166,8 +185,6 @@ def extract_features(parsed_equations):
         'Num_Variables': len(variables)
     }
 
-# ... [imports and previous code remain the same]
-
 @app.route('/upload', methods=['POST'])
 def upload_image():
     if 'image' not in request.files:
@@ -215,9 +232,9 @@ def upload_image():
                     'error': None
                 }
             except Exception as e:
-                # Fallback to numeric if symbolic fails.
+                
                 fallback_error = e
-                recommended_method = 'numeric'  # Update the recommended approach.
+                recommended_method = 'numeric' 
                 try:
                     start = time.perf_counter()
                     numeric_sol, numeric_time, numeric_error = solve_equation_system_numeric(
@@ -289,4 +306,4 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1].lower() == "train":
         train_ml_model()
     else:
-        app.run(debug=True)
+        app.run(debug=True, port=5001)
