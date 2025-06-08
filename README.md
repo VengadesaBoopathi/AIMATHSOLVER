@@ -176,7 +176,7 @@ This project is licensed under the MIT License.
 ## Authors
 
 * [Vengadesa Boopathi P](https://github.com/VengadesaBoopathi)
-* Kondi Nanda Gopal Umesh Raju
+* [Kondi Nanda Gopal Umesh Raju](https://github.com/UmeshRaju) 
 
 > Developed at Puducherry Technological University, 2025
 
